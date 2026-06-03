@@ -90,6 +90,8 @@
   .sv3 { color: var(--green-text); }
   .sv4 { color: var(--amber-text); }
   .sv5 { color: var(--red-text); }
+  .sv-unset { color: var(--hint); font-weight: 400; }
+  input[type=range].unset { opacity: 0.35; }
   
   .chip-grid { display: flex; flex-wrap: wrap; gap: 6px; }
   .chip { font-size: 12px; padding: 5px 11px; border-radius: 20px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); cursor: pointer; transition: all .12s; user-select: none; }
@@ -438,8 +440,8 @@ const URL_KEY = 'med_tracker_v3_url';
 const MSYMS = ['Nausea','Headache','Dry mouth','Palpitations / fast HR','Dizziness','Sweating (unusual)','Stomach upset','Jitteriness / tremor','Appetite loss','Brain fog','Low mood on waking','Fatigue'];
 const ESYMS = ['Headache','Palpitations','Nausea / reflux','Trouble falling asleep','Restlessness / agitation','Energy crash','Emotional blunting','Irritability spike','Sexual side effects','Excessive sweating','Low mood'];
 const ALERT_SYMS = ['Palpitations / fast HR','Jitteriness / tremor','Palpitations','Restlessness / agitation'];
-const ACTIVITIES = ['Work / study', 'Gym', 'Running', 'Walking', 'Cycling', 'Socialising', 'Family time', 'Rest day', 'Travel', 'Medical appointment', 'Poor sleep day', 'Stressful day', 'Alcohol'];
-const INTRA_SL = [{id:'mood',lbl:'Mood'},{id:'energy',lbl:'Energy'},{id:'anxiety',lbl:'Anxiety'},{id:'focus',lbl:'Focus'},{id:'hunger',lbl:'Hunger'}];
+const ACTIVITIES = ['Work / study', 'Gym', 'Running / jogging', 'Walking', 'Cycling', 'Swimming', 'Yoga / stretching', 'Socialising', 'Date / partner time', 'Family time', 'Friends', 'Rest day', 'Travel', 'Outdoor time', 'Cooking', 'Reading', 'Gaming / hobby', 'Medical appointment', 'Therapy session', 'Poor sleep day', 'Stressful day', 'Conflict / argument', 'Alcohol', 'Late night'];
+const INTRA_SL = [{id:'mood',lbl:'Mood'},{id:'energy',lbl:'Energy'},{id:'anxiety',lbl:'Anxiety'},{id:'irritability',lbl:'Irritability'},{id:'focus',lbl:'Focus'},{id:'hunger',lbl:'Hunger'}];
 
 const SCRIPT = `function doPost(e) {
   try {
@@ -487,15 +489,26 @@ function sv(el, outId) {
   const out = document.getElementById(outId);
   out.textContent = v;
   out.className = 'slider-val sv' + v;
+  el.classList.remove('unset');
 }
 function getSl(id) {
   const el = document.getElementById(id);
-  return el && el.value !== '' ? parseInt(el.value) : null;
+  if (!el || el.classList.contains('unset')) return null;
+  return parseInt(el.value);
 }
 function setSl(id, outId, val) {
-  if (val == null) return;
   const el = document.getElementById(id);
-  if (el) { el.value = val; sv(el, outId); }
+  const out = document.getElementById(outId);
+  if (!el) return;
+  if (val == null) {
+    el.value = 3; // browser default midpoint, but mark as unset
+    el.classList.add('unset');
+    if (out) { out.textContent = '—'; out.className = 'slider-val sv-unset'; }
+  } else {
+    el.value = val;
+    el.classList.remove('unset');
+    if (out) { out.textContent = val; out.className = 'slider-val sv' + val; }
+  }
 }
 
 function buildChips(containerId, items) {
@@ -548,7 +561,12 @@ function addIntra(data) {
     const sl = document.createElement('input'); sl.type = 'range'; sl.min = 1; sl.max = 5; sl.step = 1; sl.id = 'isl_' + id + '_' + s.id;
     const out = document.createElement('span'); out.className = 'slider-val'; out.id = 'iso_' + id + '_' + s.id; out.textContent = '—'; out.style.fontSize = '12px';
     sl.oninput = () => sv(sl, 'iso_' + id + '_' + s.id);
-    if (bd.scales && bd.scales[s.id]) { sl.value = bd.scales[s.id]; sv(sl, 'iso_' + id + '_' + s.id); }
+    const savedVal = bd.scales && bd.scales[s.id] != null ? bd.scales[s.id] : null;
+    if (savedVal != null) {
+      sl.value = savedVal; sv(sl, 'iso_' + id + '_' + s.id);
+    } else {
+      sl.value = 3; sl.classList.add('unset');
+    }
     row.appendChild(lbl); row.appendChild(sl); row.appendChild(out); div.appendChild(row);
   });
   wrap.appendChild(div);
@@ -556,7 +574,10 @@ function addIntra(data) {
 function getIntras() {
   return intras.map(b => {
     const scales = {};
-    INTRA_SL.forEach(s => { const el = document.getElementById('isl_' + b.id + '_' + s.id); if (el && el.value) scales[s.id] = parseInt(el.value); });
+    INTRA_SL.forEach(s => {
+      const el = document.getElementById('isl_' + b.id + '_' + s.id);
+      if (el && !el.classList.contains('unset')) scales[s.id] = parseInt(el.value);
+    });
     return { time: document.getElementById('it_' + b.id)?.value || '', scales };
   });
 }
@@ -634,19 +655,19 @@ function loadForm(d) {
   document.getElementById('elv-ok').checked = !!e.elv_taken;
   document.getElementById('elv-t').value = e.elv_time || '';
   document.getElementById('elv-dose').value = e.elv_dose || '';
-  setSl('sl-sleep', 'o-sleep', e.sleep_q);
+  setSl('sl-sleep', 'o-sleep', e.sleep_q ?? null);
   document.getElementById('sleep-onset').value = e.sleep_onset || '';
   document.getElementById('sleep-h').value = e.sleep_h || '';
-  setSl('sl-mmood', 'o-mmood', e.m_mood); setSl('sl-menergy', 'o-menergy', e.m_energy);
-  setSl('sl-manx', 'o-manx', e.m_anx); setSl('sl-mirr', 'o-mirr', e.m_irr);
+  setSl('sl-mmood', 'o-mmood', e.m_mood ?? null); setSl('sl-menergy', 'o-menergy', e.m_energy ?? null);
+  setSl('sl-manx', 'o-manx', e.m_anx ?? null); setSl('sl-mirr', 'o-mirr', e.m_irr ?? null);
   setChips('msym-chips', e.m_syms || []);
   document.getElementById('mnotes').value = e.m_notes || '';
   document.getElementById('intra-wrap').innerHTML = ''; intras = [];
   (e.intraday || []).forEach(b => addIntra(b));
-  setSl('sl-emood', 'o-emood', e.e_mood); setSl('sl-eenergy', 'o-eenergy', e.e_energy);
-  setSl('sl-eanx', 'o-eanx', e.e_anx); setSl('sl-eirr', 'o-eirr', e.e_irr);
-  setSl('sl-efocus', 'o-efocus', e.e_focus); setSl('sl-ehunger', 'o-ehunger', e.e_hunger);
-  setSl('sl-eday', 'o-eday', e.e_day);
+  setSl('sl-emood', 'o-emood', e.e_mood ?? null); setSl('sl-eenergy', 'o-eenergy', e.e_energy ?? null);
+  setSl('sl-eanx', 'o-eanx', e.e_anx ?? null); setSl('sl-eirr', 'o-eirr', e.e_irr ?? null);
+  setSl('sl-efocus', 'o-efocus', e.e_focus ?? null); setSl('sl-ehunger', 'o-ehunger', e.e_hunger ?? null);
+  setSl('sl-eday', 'o-eday', e.e_day ?? null);
   setChips('esym-chips', e.e_syms || []);
   document.getElementById('forced-eat').checked = !!e.forced_eat;
   setChips('act-chips', e.activities || []);
