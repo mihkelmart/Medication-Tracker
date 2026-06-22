@@ -443,30 +443,54 @@ const ALERT_SYMS = ['Palpitations / fast HR','Jitteriness / tremor','Palpitation
 const ACTIVITIES = ['Work / study', 'Gym', 'Running / jogging', 'Walking', 'Cycling', 'Swimming', 'Yoga / stretching', 'Socialising', 'Date / partner time', 'Family time', 'Friends', 'Rest day', 'Travel', 'Outdoor time', 'Cooking', 'Reading', 'Gaming / hobby', 'Medical appointment', 'Therapy session', 'Poor sleep day', 'Stressful day', 'Conflict / argument', 'Alcohol', 'Late night'];
 const INTRA_SL = [{id:'mood',lbl:'Mood'},{id:'energy',lbl:'Energy'},{id:'anxiety',lbl:'Anxiety'},{id:'irritability',lbl:'Irritability'},{id:'focus',lbl:'Focus'},{id:'hunger',lbl:'Hunger'}];
 
-const SCRIPT = `function doPost(e) {
-  try {
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var sh = ss.getSheetByName('Log') || ss.insertSheet('Log');
-    var data = JSON.parse(e.postData.contents);
-    if (sh.getLastRow() === 0) {
-      sh.appendRow(Object.keys(data));
-    }
-    sh.appendRow(Object.values(data));
-    var out = ContentService.createTextOutput(JSON.stringify({ok: true}));
-    out.setMimeType(ContentService.MimeType.JSON);
-    return out;
-  } catch(err) {
-    var out = ContentService.createTextOutput(JSON.stringify({ok: false, error: err.message}));
-    out.setMimeType(ContentService.MimeType.JSON);
-    return out;
+const SCRIPT = `var DAILY_HEADERS = ["Date","Fluoxetine_taken","Fluoxetine_time","Fluoxetine_dose_mg","Elvanse_taken","Elvanse_time","Elvanse_dose_mg","Sleep_quality","Sleep_onset","Sleep_hours","Morning_mood","Morning_energy","Morning_anxiety","Morning_irritability","Morning_symptoms","Morning_notes","Evening_mood","Evening_energy","Evening_anxiety","Evening_irritability","Evening_focus","Evening_hunger","Day_rating","Evening_symptoms","Activities","Forced_eat","Evening_notes"];
+var INTRA_HEADERS = ["Date","Time","Mood","Energy","Anxiety","Irritability","Focus","Hunger"];
+
+function getSheet(ss, name, fallback) {
+  var sh = ss.getSheetByName(name) || ss.insertSheet(name);
+  if (sh.getLastRow() === 0) { sh.getRange(1,1,1,fallback.length).setValues([fallback]); sh.setFrozenRows(1); }
+  return sh;
+}
+function headerRow(sh){ return sh.getRange(1,1,1,sh.getLastColumn()).getValues()[0].map(String); }
+function toRow(obj, headers){ return headers.map(function(h){ var v=obj[h]; return (v===undefined||v===null)?'':v; }); }
+function findDateRow(sh, date){
+  var last=sh.getLastRow(); if(last<2) return -1;
+  var col=sh.getRange(2,1,last-1,1).getValues();
+  for(var i=0;i<col.length;i++){ if(String(col[i][0])===String(date)) return i+2; }
+  return -1;
+}
+function upsertDaily(ss, daily){
+  var sh=getSheet(ss,'Daily',DAILY_HEADERS), headers=headerRow(sh), row=toRow(daily,headers);
+  var at=findDateRow(sh,daily.Date);
+  if(at===-1) sh.appendRow(row); else sh.getRange(at,1,1,row.length).setValues([row]);
+}
+function replaceIntraday(ss, date, list){
+  var sh=getSheet(ss,'Intraday',INTRA_HEADERS), headers=headerRow(sh), last=sh.getLastRow();
+  if(last>=2){
+    var col=sh.getRange(2,1,last-1,1).getValues();
+    for(var i=col.length-1;i>=0;i--){ if(String(col[i][0])===String(date)) sh.deleteRow(i+2); }
+  }
+  if(list && list.length){
+    var rows=list.map(function(o){ return toRow(o,headers); });
+    sh.getRange(sh.getLastRow()+1,1,rows.length,headers.length).setValues(rows);
   }
 }
-
-function doGet(e) {
-  var out = ContentService.createTextOutput(JSON.stringify({ok: true, msg: 'Med tracker relay active'}));
-  out.setMimeType(ContentService.MimeType.JSON);
-  return out;
-}`;
+function doPost(e){
+  var lock=LockService.getScriptLock();
+  try{
+    lock.waitLock(20000);
+    var ss=SpreadsheetApp.getActiveSpreadsheet();
+    var data=JSON.parse(e.postData.contents);
+    if(data.daily && data.daily.Date){
+      upsertDaily(ss, data.daily);
+      replaceIntraday(ss, data.daily.Date, data.intraday || []);
+    }
+    return json({ok:true});
+  } catch(err){ return json({ok:false, error:String(err)}); }
+  finally { try{ lock.releaseLock(); }catch(e2){} }
+}
+function doGet(e){ return json({ok:true, msg:'Med tracker relay v2 active'}); }
+function json(obj){ var o=ContentService.createTextOutput(JSON.stringify(obj)); o.setMimeType(ContentService.MimeType.JSON); return o; }`;
 
 let intras = [];
 let intraIdx = 0;
@@ -607,7 +631,7 @@ function saveEntry() {
   const url = getUrl();
   if (url) {
     btn.textContent = 'Syncing to Sheets…'; btn.disabled = true;
-    fetch(url, { method: 'POST', body: JSON.stringify(flattenEntry(activeDate, e)) })
+    fetch(url, { method: 'POST', body: JSON.stringify(buildPayload(activeDate, e)) })
       .then(r => r.json())
       .then(res => {
         btn.className = 'save-btn ok'; btn.textContent = 'Saved + synced to Sheets ✓';
@@ -624,26 +648,30 @@ function saveEntry() {
   renderHistory();
 }
 
-function flattenEntry(date, e) {
-  const row = {
+function dailyRow(date, e) {
+  return {
     Date: date,
     Fluoxetine_taken: e.fluox_taken ? 'yes' : 'no', Fluoxetine_time: e.fluox_time || '', Fluoxetine_dose_mg: e.fluox_dose || '',
     Elvanse_taken: e.elv_taken ? 'yes' : 'no', Elvanse_time: e.elv_time || '', Elvanse_dose_mg: e.elv_dose || '',
     Sleep_quality: e.sleep_q || '', Sleep_onset: e.sleep_onset || '', Sleep_hours: e.sleep_h || '',
     Morning_mood: e.m_mood || '', Morning_energy: e.m_energy || '', Morning_anxiety: e.m_anx || '', Morning_irritability: e.m_irr || '',
-    Morning_symptoms: (e.m_syms || []).join('; '), Morning_notes: e.m_notes || ''
+    Morning_symptoms: (e.m_syms || []).join('; '), Morning_notes: e.m_notes || '',
+    Evening_mood: e.e_mood || '', Evening_energy: e.e_energy || '', Evening_anxiety: e.e_anx || '',
+    Evening_irritability: e.e_irr || '', Evening_focus: e.e_focus || '', Evening_hunger: e.e_hunger || '',
+    Day_rating: e.e_day || '', Evening_symptoms: (e.e_syms || []).join('; '),
+    Activities: [...(e.activities || []), ...(e.act_other ? [e.act_other] : [])].join('; '),
+    Forced_eat: e.forced_eat ? 'yes' : 'no', Evening_notes: e.e_notes || ''
   };
-  (e.intraday || []).forEach((b, i) => {
-    const p = 'Intraday' + (i + 1) + '_';
-    row[p + 'time'] = b.time;
-    INTRA_SL.forEach(s => { row[p + s.id] = b.scales[s.id] || ''; });
+}
+function intraRows(date, e) {
+  return (e.intraday || []).map(b => {
+    const o = { Date: date, Time: b.time || '' };
+    INTRA_SL.forEach(s => { o[s.lbl] = (b.scales && b.scales[s.id] != null) ? b.scales[s.id] : ''; });
+    return o;
   });
-  row.Evening_mood = e.e_mood || ''; row.Evening_energy = e.e_energy || ''; row.Evening_anxiety = e.e_anx || '';
-  row.Evening_irritability = e.e_irr || ''; row.Evening_focus = e.e_focus || ''; row.Evening_hunger = e.e_hunger || '';
-  row.Day_rating = e.e_day || ''; row.Evening_symptoms = (e.e_syms || []).join('; ');
-  row.Activities = (e.activities || []).join('; '); row.Activities_other = e.act_other || '';
-  row.Forced_eat = e.forced_eat ? 'yes' : 'no'; row.Evening_notes = e.e_notes || '';
-  return row;
+}
+function buildPayload(date, e) {
+  return { daily: dailyRow(date, e), intraday: intraRows(date, e) };
 }
 
 function loadForm(d) {
@@ -748,7 +776,7 @@ function exportCSV() {
   const all = ld();
   const keys = Object.keys(all).filter(k => /^\d{4}-\d{2}-\d{2}$/.test(k)).sort();
   if (!keys.length) { alert('No entries to export.'); return; }
-  const rows = keys.map(d => flattenEntry(d, all[d]));
+  const rows = keys.map(d => dailyRow(d, all[d]));
   const headers = Object.keys(rows[0]);
   const csv = [headers.join(','), ...rows.map(r => headers.map(h => '"' + String(r[h] || '').replace(/"/g, '""') + '"').join(','))].join('\n');
   const a = document.createElement('a'); a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
